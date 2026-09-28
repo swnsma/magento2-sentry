@@ -7,11 +7,13 @@ namespace JustBetter\Sentry\Model;
 use JustBetter\Sentry\Helper\Data;
 use Magento\Framework\App\CacheInterface;
 use Magento\Framework\Serialize\Serializer\Json;
+use Sentry\HttpClient\Response;
 
 /**
  * Cache-backed circuit breaker for outbound Sentry HTTP calls.
  *
  * States: closed (normal) → open (fail fast) → half-open (probe) → closed.
+ * Opens after repeated failures, or immediately on a Sentry rate limit (429).
  */
 class CircuitBreaker
 {
@@ -23,31 +25,29 @@ class CircuitBreaker
     private const CACHE_TAG = 'JUSTBETTER_SENTRY_CIRCUIT_BREAKER';
 
     /**
-     * @var array{state:string,failures:int,successes:int,opened_at:float}|null
+     * @var array{state:string,failures:int,successes:int,opened_at:float,retry_at:float}|null
      */
     private ?array $state = null;
 
     /**
-     * @param CacheInterface $cache
-     * @param Json           $serializer
-     * @param Data           $helper
+     * @param CacheInterface  $cache
+     * @param Json            $serializer
+     * @param Data            $helper
+     * @param RateLimitParser $rateLimitParser
      */
     public function __construct(
         private readonly CacheInterface $cache,
         private readonly Json $serializer,
-        private readonly Data $helper
+        private readonly Data $helper,
+        private readonly RateLimitParser $rateLimitParser
     ) {
     }
 
     /**
-     * Whether a sync HTTP attempt is allowed.
+     * Whether an outbound Sentry delivery attempt is allowed.
      */
     public function allowRequest(): bool
     {
-        if (!$this->helper->isCircuitBreakerEnabled()) {
-            return true;
-        }
-
         $state = $this->getState();
 
         return match ($state['state']) {
@@ -62,10 +62,6 @@ class CircuitBreaker
      */
     public function recordSuccess(): void
     {
-        if (!$this->helper->isCircuitBreakerEnabled()) {
-            return;
-        }
-
         $state = $this->getState();
 
         if ($state['state'] === self::STATE_HALF_OPEN) {
@@ -90,10 +86,6 @@ class CircuitBreaker
      */
     public function recordFailure(): void
     {
-        if (!$this->helper->isCircuitBreakerEnabled()) {
-            return;
-        }
-
         $state = $this->getState();
 
         if ($state['state'] === self::STATE_HALF_OPEN) {
@@ -115,9 +107,30 @@ class CircuitBreaker
     }
 
     /**
+     * Open the circuit right away until the time Sentry asked us to back off to.
+     *
+     * @param Response $response 429 response carrying X-Sentry-Rate-Limits / Retry-After
+     */
+    public function recordRateLimit(Response $response): void
+    {
+        $retryAt = $this->rateLimitParser->getRetryAt($response);
+        if (!$retryAt || $retryAt <= time()) {
+            $retryAt = time() + $this->helper->getCircuitBreakerRecoveryTimeout();
+        }
+
+        $this->persist([
+            'state'     => self::STATE_OPEN,
+            'failures'  => $this->getState()['failures'],
+            'successes' => 0,
+            'opened_at' => microtime(true),
+            'retry_at'  => (float) $retryAt,
+        ]);
+    }
+
+    /**
      * Load circuit breaker state from in-memory cache or Magento cache.
      *
-     * @return array{state:string,failures:int,successes:int,opened_at:float}
+     * @return array{state:string,failures:int,successes:int,opened_at:float,retry_at:float}
      */
     private function getState(): array
     {
@@ -145,20 +158,21 @@ class CircuitBreaker
             'failures'  => (int) ($decoded['failures'] ?? 0),
             'successes' => (int) ($decoded['successes'] ?? 0),
             'opened_at' => (float) ($decoded['opened_at'] ?? 0.0),
+            'retry_at'  => (float) ($decoded['retry_at'] ?? 0.0),
         ];
     }
 
     /**
-     * Transition from open to half-open after the recovery timeout.
+     * Transition from open to half-open once the rate limit or the recovery timeout has passed.
      *
-     * @param array{state:string,failures:int,successes:int,opened_at:float} $state
+     * @param array{state:string,failures:int,successes:int,opened_at:float,retry_at:float} $state
      */
     private function tryTransitionToHalfOpen(array $state): bool
     {
-        $recoveryTimeout = $this->helper->getCircuitBreakerRecoveryTimeout();
-        if ($state['opened_at'] <= 0
-            || (microtime(true) - $state['opened_at']) < $recoveryTimeout
-        ) {
+        $reopenAt = $state['retry_at'] > 0
+            ? $state['retry_at']
+            : $state['opened_at'] + $this->helper->getCircuitBreakerRecoveryTimeout();
+        if ($state['opened_at'] <= 0 || microtime(true) < $reopenAt) {
             return false;
         }
 
@@ -167,6 +181,7 @@ class CircuitBreaker
             'failures'  => $state['failures'],
             'successes' => 0,
             'opened_at' => $state['opened_at'],
+            'retry_at'  => 0.0,
         ]);
 
         return true;
@@ -175,7 +190,7 @@ class CircuitBreaker
     /**
      * Default closed circuit state.
      *
-     * @return array{state:string,failures:int,successes:int,opened_at:float}
+     * @return array{state:string,failures:int,successes:int,opened_at:float,retry_at:float}
      */
     private function closedState(): array
     {
@@ -184,6 +199,7 @@ class CircuitBreaker
             'failures'  => 0,
             'successes' => 0,
             'opened_at' => 0.0,
+            'retry_at'  => 0.0,
         ];
     }
 
@@ -207,19 +223,25 @@ class CircuitBreaker
             'failures'  => $failures,
             'successes' => 0,
             'opened_at' => microtime(true),
+            'retry_at'  => 0.0,
         ]);
     }
 
     /**
      * Persist circuit state to memory and Magento cache.
      *
-     * @param array{state:string,failures:int,successes:int,opened_at:float} $state
+     * @param array{state:string,failures:int,successes:int,opened_at:float,retry_at:float} $state
      */
     private function persist(array $state): void
     {
         $this->state = $state;
-        // Keep state longer than recovery window so open state survives across requests.
-        $ttl = max(300, $this->helper->getCircuitBreakerRecoveryTimeout() * 5);
+        // Outlive both the recovery window and a rate-limit backoff, so open state survives across requests.
+        $recoveryTimeout = $this->helper->getCircuitBreakerRecoveryTimeout();
+        $ttl = max(
+            300,
+            $recoveryTimeout * 5,
+            (int) ceil($state['retry_at'] - microtime(true)) + $recoveryTimeout
+        );
         $this->cache->save(
             (string) $this->serializer->serialize($state),
             self::CACHE_KEY,

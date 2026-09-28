@@ -5,10 +5,9 @@ declare(strict_types=1);
 namespace JustBetter\Sentry\Model\Transport;
 
 use JustBetter\Sentry\Helper\Data;
-use JustBetter\Sentry\Model\SentryInteraction;
+use JustBetter\Sentry\Model\CircuitBreaker;
 use RuntimeException;
-use Sentry\Client;
-use Sentry\HttpClient\HttpClient;
+use Sentry\HttpClient\HttpClientInterface;
 use Sentry\HttpClient\Request;
 use Sentry\Options;
 use Sentry\Transport\ResultStatus;
@@ -19,15 +18,19 @@ use Sentry\Transport\ResultStatus;
 class EnvelopeSender
 {
     /**
-     * @param Data $helper
+     * @param Data                $helper
+     * @param HttpClientInterface $httpClient
+     * @param CircuitBreaker      $circuitBreaker
      */
     public function __construct(
-        private readonly Data $helper
+        private readonly Data $helper,
+        private readonly HttpClientInterface $httpClient,
+        private readonly CircuitBreaker $circuitBreaker
     ) {
     }
 
     /**
-     * POST a pre-serialized envelope to the configured Sentry DSN.
+     * POST a pre-serialized envelope to the configured Sentry DSN and update the circuit breaker.
      *
      * Payload must already include fire-time fields (event "timestamp",
      * envelope "sent_at") — this method does not re-serialize or re-stamp.
@@ -56,24 +59,31 @@ class EnvelopeSender
         $request = new Request();
         $request->setStringBody($payload);
 
-        $httpClient = new HttpClient(SentryInteraction::SDK_IDENTIFIER, Client::SDK_VERSION);
-        $response = $httpClient->sendRequest($request, $options);
-
-        if ($response->hasError()) {
-            throw new RuntimeException(
-                sprintf('Sentry envelope delivery failed: %s', $response->getError())
-            );
-        }
-
+        $response = $this->httpClient->sendRequest($request, $options);
         $status = ResultStatus::createFromHttpStatusCode($response->getStatusCode());
-        if ((string) $status !== (string) ResultStatus::success()) {
-            throw new RuntimeException(
-                sprintf(
-                    'Sentry envelope delivery failed with HTTP %d (%s).',
-                    $response->getStatusCode(),
-                    (string) $status
-                )
-            );
+
+        switch ($status) {
+            case ResultStatus::success():
+                $this->circuitBreaker->recordSuccess();
+
+                return;
+            case ResultStatus::rateLimit():
+                $this->circuitBreaker->recordRateLimit($response);
+                break;
+            case ResultStatus::failed():
+            case ResultStatus::unknown():
+                $this->circuitBreaker->recordFailure();
+                break;
+            // invalid / contentTooLarge: rejected payload, says nothing about Sentry health
         }
+
+        throw new RuntimeException(
+            sprintf(
+                'Sentry envelope delivery failed with HTTP %d (%s): %s',
+                $response->getStatusCode(),
+                $status,
+                $response->getError()
+            )
+        );
     }
 }

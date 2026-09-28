@@ -27,7 +27,6 @@
                 <tracing_sample_data/>
                 <ignore_js_errors/>
                 <async_sending_enabled/>
-                <circuit_breaker_enabled/>
                 <circuit_breaker_failure_threshold/>
                 <circuit_breaker_recovery_timeout/>
                 <circuit_breaker_success_threshold/>
