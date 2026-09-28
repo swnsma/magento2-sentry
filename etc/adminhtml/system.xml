@@ -154,20 +154,11 @@
                         <field id="enabled">1</field>
                     </depends>
                 </field>
-                <field id="circuit_breaker_enabled" translate="label comment" type="select" sortOrder="120" showInDefault="1" showInStore="0" showInWebsite="0" canRestore="1">
-                    <label>Circuit Breaker Enabled</label>
-                    <comment><![CDATA[Fail fast on synchronous Sentry HTTP calls after repeated failures so a degraded Sentry does not stall shoppers.]]></comment>
-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
-                    <depends>
-                        <field id="enabled">1</field>
-                    </depends>
-                </field>
                 <field id="circuit_breaker_failure_threshold" translate="label" type="text" sortOrder="130" showInDefault="1" showInStore="0" showInWebsite="0" canRestore="1">
                     <label>Circuit Breaker Failure Threshold</label>
                     <validate>validate-digits validate-greater-than-zero</validate>
                     <depends>
                         <field id="enabled">1</field>
-                        <field id="circuit_breaker_enabled">1</field>
                     </depends>
                 </field>
                 <field id="circuit_breaker_recovery_timeout" translate="label comment" type="text" sortOrder="140" showInDefault="1" showInStore="0" showInWebsite="0" canRestore="1">
@@ -176,7 +167,6 @@
                     <validate>validate-digits validate-greater-than-zero</validate>
                     <depends>
                         <field id="enabled">1</field>
-                        <field id="circuit_breaker_enabled">1</field>
                     </depends>
                 </field>
                 <field id="circuit_breaker_success_threshold" translate="label" type="text" sortOrder="150" showInDefault="1" showInStore="0" showInWebsite="0" canRestore="1">
@@ -184,7 +174,6 @@
                     <validate>validate-digits validate-greater-than-zero</validate>
                     <depends>
                         <field id="enabled">1</field>
-                        <field id="circuit_breaker_enabled">1</field>
                     </depends>
                 </field>
                 <field id="http_timeout" translate="label comment" type="text" sortOrder="160" showInDefault="1" showInStore="0" showInWebsite="0" canRestore="1">

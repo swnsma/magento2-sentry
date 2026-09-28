@@ -126,6 +126,11 @@ class ResilientTransport implements TransportInterface
      */
     private function queue(Event $event): Result
     {
+        // Consumer would drop it anyway while the circuit is open.
+        if (!$this->circuitBreaker->allowRequest()) {
+            return new Result(ResultStatus::failed(), $event);
+        }
+
         if ($event->getTimestamp() === null) {
             $event->setTimestamp(microtime(true));
         }

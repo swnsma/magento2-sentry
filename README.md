@@ -63,7 +63,6 @@ This module uses the [Magento Deployment Configuration](https://devdocs.magento.
     'enable_csp_report_url' => true,
     // Resilient delivery
     'async_sending_enabled' => true,
-    'circuit_breaker_enabled' => true,
     'circuit_breaker_failure_threshold' => 5,
     'circuit_breaker_recovery_timeout' => 60,
     'circuit_breaker_success_threshold' => 2,
@@ -106,7 +105,6 @@ Next to that there are some configuration options under Stores > Configuration >
 | `spotlight_url` | - | Override the [Sidecar url](https://spotlightjs.com/sidecar/) |         
 | `enable_csp_report_url` | `false` | If set to true, the report-uri will be automatically added based on the DSN. |
 | `async_sending_enabled` | `false` | Send Sentry events asynchronously via Magento Message Queue (`justbetter.sentry.event.send`). |
-| `circuit_breaker_enabled` | `true` | Enable circuit breaker for synchronous delivery to fail fast when Sentry is unreachable. |
 | `circuit_breaker_failure_threshold` | `5` | Consecutive HTTP failures before the circuit opens. |
 | `circuit_breaker_recovery_timeout` | `60` | Seconds to wait before allowing a probe request after the circuit opens. |
 | `circuit_breaker_success_threshold` | `2` | Successful probes in half-open state required before closing the circuit. |
@@ -117,8 +115,16 @@ Next to that there are some configuration options under Stores > Configuration >
 
 Event delivery can be configured as either synchronous or asynchronous:
 
-1. (Default) **Sync mode + circuit breaker** (`async_sending_enabled = false`): Events are sent over HTTP immediately. If `circuit_breaker_enabled` is true and consecutive failures reach `circuit_breaker_failure_threshold`, the circuit opens and subsequent requests fail fast without blocking Magento.
+1. (Default) **Sync mode** (`async_sending_enabled = false`): Events are sent over HTTP immediately.
 2. **Async mode** (`async_sending_enabled = true`): Events are serialized immediately with exact capture timestamps and published to the `justbetter.sentry.event.send` message queue. A background consumer delivers them to Sentry via HTTP.
+
+Both modes share an always-on circuit breaker:
+
+- When consecutive failures (5xx, network errors) reach `circuit_breaker_failure_threshold`, the circuit opens. Events are dropped without blocking Magento until `circuit_breaker_recovery_timeout` has passed.
+- When the consumer gets a rate-limit response (HTTP 429, e.g. quota exhausted), the circuit opens right away. It stays open until the time Sentry sends in `X-Sentry-Rate-Limits` / `Retry-After`.
+- While the circuit is open, async mode does not publish new events, and the consumer drops queued ones without calling Sentry.
+
+The consumer never retries a failed envelope. Failures are written to `var/log/sentry.log` and are never sent to Sentry themselves.
 
 To run the queue consumer manually:
 

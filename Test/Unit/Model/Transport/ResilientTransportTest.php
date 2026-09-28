@@ -50,7 +50,7 @@ class ResilientTransportTest extends TestCase
         $httpTransport->expects($this->never())->method('send');
 
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->never())->method('allowRequest');
+        $circuitBreaker->method('allowRequest')->willReturn(true);
 
         $result = $this->createTransport(
             $httpTransport,
@@ -69,7 +69,6 @@ class ResilientTransportTest extends TestCase
         $event = Event::createEvent();
         $helper = $this->createStub(Data::class);
         $helper->method('isAsyncSendingEnabled')->willReturn(false);
-        $helper->method('isCircuitBreakerEnabled')->willReturn(true);
 
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
         $circuitBreaker->method('allowRequest')->willReturn(true);
@@ -102,7 +101,6 @@ class ResilientTransportTest extends TestCase
         $event = Event::createEvent();
         $helper = $this->createStub(Data::class);
         $helper->method('isAsyncSendingEnabled')->willReturn(false);
-        $helper->method('isCircuitBreakerEnabled')->willReturn(true);
 
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
         $circuitBreaker->method('allowRequest')->willReturn(true);
@@ -130,7 +128,6 @@ class ResilientTransportTest extends TestCase
         $event = Event::createEvent();
         $helper = $this->createStub(Data::class);
         $helper->method('isAsyncSendingEnabled')->willReturn(false);
-        $helper->method('isCircuitBreakerEnabled')->willReturn(true);
 
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
         $circuitBreaker->method('allowRequest')->willReturn(true);
@@ -158,7 +155,6 @@ class ResilientTransportTest extends TestCase
         $event = Event::createEvent();
         $helper = $this->createStub(Data::class);
         $helper->method('isAsyncSendingEnabled')->willReturn(false);
-        $helper->method('isCircuitBreakerEnabled')->willReturn(true);
 
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
         $circuitBreaker->method('allowRequest')->willReturn(true);
@@ -187,7 +183,6 @@ class ResilientTransportTest extends TestCase
         $event = Event::createEvent();
         $helper = $this->createStub(Data::class);
         $helper->method('isAsyncSendingEnabled')->willReturn(false);
-        $helper->method('isCircuitBreakerEnabled')->willReturn(true);
 
         $circuitBreaker = $this->createStub(CircuitBreaker::class);
         $circuitBreaker->method('allowRequest')->willReturn(false);
@@ -200,6 +195,29 @@ class ResilientTransportTest extends TestCase
 
         $result = $this->createTransport(
             $httpTransport,
+            $this->createStub(PayloadSerializerInterface::class),
+            $publisher,
+            $circuitBreaker,
+            $helper
+        )->send($event);
+
+        $this->assertSame((string) ResultStatus::failed(), (string) $result->getStatus());
+    }
+
+    public function testOpenCircuitDropsQueuedEventWithoutPublishing(): void
+    {
+        $event = Event::createEvent();
+        $helper = $this->createStub(Data::class);
+        $helper->method('isAsyncSendingEnabled')->willReturn(true);
+
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(false);
+
+        $publisher = $this->createMock(SentryEventPublisher::class);
+        $publisher->expects($this->never())->method('publish');
+
+        $result = $this->createTransport(
+            $this->createStub(TransportInterface::class),
             $this->createStub(PayloadSerializerInterface::class),
             $publisher,
             $circuitBreaker,
@@ -234,11 +252,14 @@ class ResilientTransportTest extends TestCase
         $publisher = $this->createMock(SentryEventPublisher::class);
         $publisher->expects($this->once())->method('publish');
 
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(true);
+
         $this->createTransport(
             $this->createStub(TransportInterface::class),
             $payloadSerializer,
             $publisher,
-            $this->createStub(CircuitBreaker::class),
+            $circuitBreaker,
             $helper
         )->send($event);
 
@@ -271,11 +292,14 @@ class ResilientTransportTest extends TestCase
         $publisher = $this->createMock(SentryEventPublisher::class);
         $publisher->expects($this->once())->method('publish');
 
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(true);
+
         $this->createTransport(
             $this->createStub(TransportInterface::class),
             $payloadSerializer,
             $publisher,
-            $this->createStub(CircuitBreaker::class),
+            $circuitBreaker,
             $helper
         )->send($event);
 
@@ -294,11 +318,14 @@ class ResilientTransportTest extends TestCase
         $publisher = $this->createStub(SentryEventPublisher::class);
         $publisher->method('publish')->willThrowException(new RuntimeException('mq down'));
 
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(true);
+
         $result = $this->createTransport(
             $this->createStub(TransportInterface::class),
             $payloadSerializer,
             $publisher,
-            $this->createStub(CircuitBreaker::class),
+            $circuitBreaker,
             $helper
         )->send($event);
 
