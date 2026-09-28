@@ -9,10 +9,33 @@ use JustBetter\Sentry\Model\CircuitBreaker;
 use JustBetter\Sentry\Model\Queue\Consumer\SentryEventConsumer;
 use JustBetter\Sentry\Model\Transport\EnvelopeSender;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use RuntimeException;
 
 class SentryEventConsumerTest extends TestCase
 {
+    private function createConsumer(
+        ?EnvelopeSender $envelopeSender = null,
+        ?CircuitBreaker $circuitBreaker = null,
+        ?Data $helper = null,
+        ?LoggerInterface $logger = null
+    ): SentryEventConsumer {
+        return new SentryEventConsumer(
+            $envelopeSender ?? $this->createStub(EnvelopeSender::class),
+            $circuitBreaker ?? $this->createStub(CircuitBreaker::class),
+            $helper ?? $this->activeHelperStub(),
+            $logger ?? $this->createStub(LoggerInterface::class)
+        );
+    }
+
+    private function activeHelperStub(): Data
+    {
+        $helper = $this->createStub(Data::class);
+        $helper->method('isActive')->willReturn(true);
+
+        return $helper;
+    }
+
     public function testSkipsWhenModuleInactive(): void
     {
         $helper = $this->createStub(Data::class);
@@ -22,65 +45,63 @@ class SentryEventConsumerTest extends TestCase
         $envelopeSender->expects($this->never())->method('send');
 
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->never())->method('recordSuccess');
-        $circuitBreaker->expects($this->never())->method('recordFailure');
+        $circuitBreaker->expects($this->never())->method('allowRequest');
 
-        $consumer = new SentryEventConsumer($envelopeSender, $circuitBreaker, $helper);
-        $consumer->process('payload');
+        $this->createConsumer($envelopeSender, $circuitBreaker, $helper)->process('payload');
     }
 
     public function testSkipsEmptyPayload(): void
     {
-        $helper = $this->createStub(Data::class);
-        $helper->method('isActive')->willReturn(true);
-
         $envelopeSender = $this->createMock(EnvelopeSender::class);
         $envelopeSender->expects($this->never())->method('send');
 
-        $consumer = new SentryEventConsumer(
-            $envelopeSender,
-            $this->createStub(CircuitBreaker::class),
-            $helper
-        );
-        $consumer->process('');
+        $this->createConsumer($envelopeSender)->process('');
     }
 
-    public function testSuccessfulDeliveryRecordsSuccess(): void
+    public function testSkipsWhileCircuitIsOpen(): void
     {
-        $helper = $this->createStub(Data::class);
-        $helper->method('isActive')->willReturn(true);
-
         $envelopeSender = $this->createMock(EnvelopeSender::class);
-        $envelopeSender
-            ->expects($this->once())
-            ->method('send')
-            ->with('envelope-bytes');
+        $envelopeSender->expects($this->never())->method('send');
 
-        $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->once())->method('recordSuccess');
-        $circuitBreaker->expects($this->never())->method('recordFailure');
-        $circuitBreaker->expects($this->never())->method('allowRequest');
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(false);
 
-        $consumer = new SentryEventConsumer($envelopeSender, $circuitBreaker, $helper);
-        $consumer->process('envelope-bytes');
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->never())->method('warning');
+
+        $this->createConsumer($envelopeSender, $circuitBreaker)->process('envelope-bytes');
     }
 
-    public function testFailureRecordsAndRethrows(): void
+    public function testSuccessfulDeliveryDoesNotLog(): void
     {
-        $helper = $this->createStub(Data::class);
-        $helper->method('isActive')->willReturn(true);
+        $envelopeSender = $this->createMock(EnvelopeSender::class);
+        $envelopeSender->expects($this->once())->method('send')->with('envelope-bytes');
 
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(true);
+
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->never())->method('warning');
+
+        $this->createConsumer($envelopeSender, $circuitBreaker, null, $logger)->process('envelope-bytes');
+    }
+
+    public function testFailedDeliveryLogsWarningAndNeverThrows(): void
+    {
         $exception = new RuntimeException('sentry 503');
         $envelopeSender = $this->createStub(EnvelopeSender::class);
         $envelopeSender->method('send')->willThrowException($exception);
 
-        $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->once())->method('recordFailure');
-        $circuitBreaker->expects($this->never())->method('recordSuccess');
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(true);
 
-        $this->expectExceptionObject($exception);
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->once())
+            ->method('warning')
+            ->with('Sentry envelope delivery failed', ['exception' => $exception]);
 
-        $consumer = new SentryEventConsumer($envelopeSender, $circuitBreaker, $helper);
-        $consumer->process('envelope-bytes');
+        $this->createConsumer($envelopeSender, $circuitBreaker, null, $logger)->process('envelope-bytes');
+
+        $this->addToAssertionCount(1);
     }
 }
