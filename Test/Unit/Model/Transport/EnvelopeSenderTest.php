@@ -83,7 +83,7 @@ class EnvelopeSenderTest extends TestCase
         $this->addToAssertionCount(1);
     }
 
-    public function testRateLimitRecordsRateLimitAndThrows(): void
+    public function testRateLimitRecordsRateLimitWithoutThrowing(): void
     {
         $response = new Response(429, ['Retry-After' => ['30']], 'rate limited');
         $httpClient = $this->createStub(HttpClientInterface::class);
@@ -94,12 +94,7 @@ class EnvelopeSenderTest extends TestCase
         $circuitBreaker->expects($this->never())->method('recordSuccess');
         $circuitBreaker->expects($this->never())->method('recordFailure');
 
-        $sender = new EnvelopeSender($this->createHelper(), $httpClient, $circuitBreaker);
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Sentry envelope delivery failed with HTTP 429 (RATE_LIMIT): rate limited');
-
-        $sender->send('envelope-bytes');
+        (new EnvelopeSender($this->createHelper(), $httpClient, $circuitBreaker))->send('envelope-bytes');
     }
 
     /**

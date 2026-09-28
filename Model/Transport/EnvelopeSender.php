@@ -37,7 +37,7 @@ class EnvelopeSender
      *
      * @param string $payload Envelope body produced at publish/fire time
      *
-     * @throws RuntimeException When delivery fails
+     * @throws RuntimeException When delivery fails for any reason other than a rate limit
      */
     public function send(string $payload): void
     {
@@ -68,8 +68,10 @@ class EnvelopeSender
 
                 return;
             case ResultStatus::rateLimit():
+                // Expected while quota is exhausted; the breaker backs off, logging each probe is noise.
                 $this->circuitBreaker->recordRateLimit($response);
-                break;
+
+                return;
             case ResultStatus::failed():
             case ResultStatus::unknown():
                 $this->circuitBreaker->recordFailure();

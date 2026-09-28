@@ -124,7 +124,7 @@ Both modes share an always-on circuit breaker:
 - When the consumer gets a rate-limit response (HTTP 429, e.g. quota exhausted), the circuit opens right away. It stays open until the time Sentry sends in `X-Sentry-Rate-Limits` / `Retry-After`.
 - While the circuit is open, async mode does not publish new events, and the consumer drops queued ones without calling Sentry.
 
-The consumer never retries a failed envelope. Failures are written to `var/log/sentry.log` and are never sent to Sentry themselves.
+The consumer never retries a failed envelope. Failures are written to `var/log/sentry.log` and are never sent to Sentry themselves. Rate-limit responses are not logged: they are expected while the quota is exhausted, and the circuit breaker already backs off.
 
 To run the queue consumer manually:
 
