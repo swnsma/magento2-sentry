@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace JustBetter\Sentry\Model\Transport;
 
 use JustBetter\Sentry\Helper\Data;
-use JustBetter\Sentry\Model\CircuitBreaker;
 use RuntimeException;
 use Sentry\HttpClient\HttpClientInterface;
 use Sentry\HttpClient\Request;
@@ -19,18 +18,16 @@ class EnvelopeSender
 {
     /**
      * @param Data                $helper
-     * @param HttpClientInterface $httpClient
-     * @param CircuitBreaker      $circuitBreaker
+     * @param HttpClientInterface $httpClient Records responses into the circuit breaker and rate limits (see di.xml)
      */
     public function __construct(
         private readonly Data $helper,
-        private readonly HttpClientInterface $httpClient,
-        private readonly CircuitBreaker $circuitBreaker
+        private readonly HttpClientInterface $httpClient
     ) {
     }
 
     /**
-     * POST a pre-serialized envelope to the configured Sentry DSN and update the circuit breaker.
+     * POST a pre-serialized envelope to the configured Sentry DSN.
      *
      * Payload must already include fire-time fields (event "timestamp",
      * envelope "sent_at") — this method does not re-serialize or re-stamp.
@@ -62,21 +59,9 @@ class EnvelopeSender
         $response = $this->httpClient->sendRequest($request, $options);
         $status = ResultStatus::createFromHttpStatusCode($response->getStatusCode());
 
-        switch ($status) {
-            case ResultStatus::success():
-                $this->circuitBreaker->recordSuccess();
-
-                return;
-            case ResultStatus::rateLimit():
-                // Expected while quota is exhausted; the breaker backs off, logging each probe is noise.
-                $this->circuitBreaker->recordRateLimit($response);
-
-                return;
-            case ResultStatus::failed():
-            case ResultStatus::unknown():
-                $this->circuitBreaker->recordFailure();
-                break;
-            // invalid / contentTooLarge: rejected payload, says nothing about Sentry health
+        // Rate limits are expected while quota is exhausted and already held back; logging each one is noise.
+        if ($status === ResultStatus::success() || $status === ResultStatus::rateLimit()) {
+            return;
         }
 
         throw new RuntimeException(

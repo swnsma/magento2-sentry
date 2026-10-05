@@ -8,50 +8,70 @@ use DateTimeImmutable;
 use Sentry\HttpClient\Response;
 
 /**
- * Reads the back-off time from a Sentry 429 response as one global limit across all categories.
+ * Reads per-category back-off times from Sentry rate-limit headers.
  *
- * @see \Sentry\Transport\RateLimiter::handleResponse() header semantics; keeps per-category state in memory only
+ * @see \Sentry\Transport\RateLimiter::handleResponse() header semantics
  */
 class RateLimitParser
 {
+    public const ALL_CATEGORIES = 'all';
+
     private const RATE_LIMITS_HEADER = 'X-Sentry-Rate-Limits';
     private const RETRY_AFTER_HEADER = 'Retry-After';
 
     /**
-     * Unix timestamp until which Sentry asked us to stop sending, or null when the response doesn't say.
+     * Unix timestamps until which Sentry asked us to stop sending, keyed by data category.
      *
      * @param Response $response
-     * @return int|null
+     * @return array<string, int>
      */
-    public function getRetryAt(Response $response): ?int
+    public function parse(Response $response): array
     {
         $now = time();
 
         if ($response->hasHeader(self::RATE_LIMITS_HEADER)) {
-            $seconds = null;
+            $limits = [];
             // Entry format: retry_after:categories:scope:reason_code[:namespaces]
             foreach (explode(',', $response->getHeaderLine(self::RATE_LIMITS_HEADER)) as $limit) {
-                $retryAfter = trim(explode(':', $limit, 2)[0]);
-                if (ctype_digit($retryAfter)) {
-                    $seconds = max($seconds ?? 0, (int) $retryAfter);
+                $parameters = explode(':', trim($limit), 3);
+                if (!ctype_digit($parameters[0])) {
+                    continue;
+                }
+
+                $retryAt = $now + (int) $parameters[0];
+                foreach (explode(';', $parameters[1] ?? '') as $category) {
+                    $category = trim($category) ?: self::ALL_CATEGORIES;
+                    $limits[$category] = max($limits[$category] ?? 0, $retryAt);
                 }
             }
 
-            return $seconds === null ? null : $now + $seconds;
+            return $limits;
         }
 
         if ($response->hasHeader(self::RETRY_AFTER_HEADER)) {
-            $retryAfter = trim($response->getHeaderLine(self::RETRY_AFTER_HEADER));
-            if (ctype_digit($retryAfter)) {
-                return $now + (int) $retryAfter;
-            }
+            $retryAt = $this->parseRetryAfter(trim($response->getHeaderLine(self::RETRY_AFTER_HEADER)), $now);
 
-            $date = DateTimeImmutable::createFromFormat(DateTimeImmutable::RFC1123, $retryAfter);
-            if ($date && $date->getTimestamp() > $now) {
-                return $date->getTimestamp();
-            }
+            return $retryAt ? [self::ALL_CATEGORIES => $retryAt] : [];
         }
 
-        return null;
+        return [];
+    }
+
+    /**
+     * Retry-After holds either delay seconds or an HTTP date.
+     *
+     * @param string $retryAfter
+     * @param int    $now
+     * @return int|null
+     */
+    private function parseRetryAfter(string $retryAfter, int $now): ?int
+    {
+        if (ctype_digit($retryAfter)) {
+            return $now + (int) $retryAfter;
+        }
+
+        $date = DateTimeImmutable::createFromFormat(DateTimeImmutable::RFC1123, $retryAfter);
+
+        return $date && $date->getTimestamp() > $now ? $date->getTimestamp() : null;
     }
 }

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace JustBetter\Sentry\Test\Unit\Model\Transport;
 
 use JustBetter\Sentry\Helper\Data;
-use JustBetter\Sentry\Model\CircuitBreaker;
 use JustBetter\Sentry\Model\Transport\EnvelopeSender;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -22,18 +21,23 @@ class EnvelopeSenderTest extends TestCase
         return $helper;
     }
 
+    private function createSender(int $statusCode, string $body = ''): EnvelopeSender
+    {
+        $httpClient = $this->createStub(HttpClientInterface::class);
+        $httpClient->method('sendRequest')->willReturn(new Response($statusCode, [], $body));
+
+        return new EnvelopeSender($this->createHelper(), $httpClient);
+    }
+
     public function testEmptyPayloadThrows(): void
     {
-        $sender = new EnvelopeSender(
-            $this->createHelper(),
-            $this->createStub(HttpClientInterface::class),
-            $this->createMock(CircuitBreaker::class)
-        );
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects($this->never())->method('sendRequest');
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('Sentry envelope payload is empty.');
 
-        $sender->send('');
+        (new EnvelopeSender($this->createHelper(), $httpClient))->send('');
     }
 
     /**
@@ -44,16 +48,13 @@ class EnvelopeSenderTest extends TestCase
         $helper = $this->createStub(Data::class);
         $helper->method('getDSN')->willReturn($dsn);
 
-        $sender = new EnvelopeSender(
-            $helper,
-            $this->createStub(HttpClientInterface::class),
-            $this->createMock(CircuitBreaker::class)
-        );
+        $httpClient = $this->createMock(HttpClientInterface::class);
+        $httpClient->expects($this->never())->method('sendRequest');
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('Sentry DSN is not configured.');
 
-        $sender->send('not-empty');
+        (new EnvelopeSender($helper, $httpClient))->send('not-empty');
     }
 
     /**
@@ -67,99 +68,48 @@ class EnvelopeSenderTest extends TestCase
         ];
     }
 
-    public function testSuccessRecordsCircuitSuccessAndReturns(): void
+    /**
+     * @dataProvider silentStatusCodeProvider
+     */
+    public function testDoesNotThrow(int $statusCode): void
     {
-        $httpClient = $this->createStub(HttpClientInterface::class);
-        $httpClient->method('sendRequest')->willReturn(new Response(200, [], ''));
-
-        $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->once())->method('recordSuccess');
-        $circuitBreaker->expects($this->never())->method('recordFailure');
-        $circuitBreaker->expects($this->never())->method('recordRateLimit');
-
-        $sender = new EnvelopeSender($this->createHelper(), $httpClient, $circuitBreaker);
-        $sender->send('envelope-bytes');
+        $this->createSender($statusCode)->send('envelope-bytes');
 
         $this->addToAssertionCount(1);
     }
 
-    public function testRateLimitRecordsRateLimitWithoutThrowing(): void
-    {
-        $response = new Response(429, ['Retry-After' => ['30']], 'rate limited');
-        $httpClient = $this->createStub(HttpClientInterface::class);
-        $httpClient->method('sendRequest')->willReturn($response);
-
-        $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->once())->method('recordRateLimit')->with($response);
-        $circuitBreaker->expects($this->never())->method('recordSuccess');
-        $circuitBreaker->expects($this->never())->method('recordFailure');
-
-        (new EnvelopeSender($this->createHelper(), $httpClient, $circuitBreaker))->send('envelope-bytes');
-    }
-
     /**
-     * @dataProvider serverFailureStatusCodeProvider
+     * @return array<string, array{0: int}>
      */
-    public function testServerFailureRecordsFailureAndThrows(int $statusCode, string $expectedMessage): void
-    {
-        $response = new Response($statusCode, [], 'boom');
-        $httpClient = $this->createStub(HttpClientInterface::class);
-        $httpClient->method('sendRequest')->willReturn($response);
-
-        $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->once())->method('recordFailure');
-        $circuitBreaker->expects($this->never())->method('recordSuccess');
-        $circuitBreaker->expects($this->never())->method('recordRateLimit');
-
-        $sender = new EnvelopeSender($this->createHelper(), $httpClient, $circuitBreaker);
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage($expectedMessage);
-
-        $sender->send('envelope-bytes');
-    }
-
-    /**
-     * @return array<string, array{0: int, 1: string}>
-     */
-    public static function serverFailureStatusCodeProvider(): array
+    public static function silentStatusCodeProvider(): array
     {
         return [
-            '5xx server error'      => [503, 'Sentry envelope delivery failed with HTTP 503 (FAILED): boom'],
-            'unrecognized status 0' => [0, 'Sentry envelope delivery failed with HTTP 0 (UNKNOWN): boom'],
+            'accepted'     => [200],
+            'rate limited' => [429],
         ];
     }
 
     /**
-     * @dataProvider rejectedPayloadStatusCodeProvider
+     * @dataProvider failedStatusCodeProvider
      */
-    public function testRejectedPayloadDoesNotTouchCircuitBreaker(int $statusCode, string $expectedMessage): void
+    public function testFailedDeliveryThrows(int $statusCode, string $expectedMessage): void
     {
-        $response = new Response($statusCode, [], 'rejected');
-        $httpClient = $this->createStub(HttpClientInterface::class);
-        $httpClient->method('sendRequest')->willReturn($response);
-
-        $circuitBreaker = $this->createMock(CircuitBreaker::class);
-        $circuitBreaker->expects($this->never())->method('recordSuccess');
-        $circuitBreaker->expects($this->never())->method('recordFailure');
-        $circuitBreaker->expects($this->never())->method('recordRateLimit');
-
-        $sender = new EnvelopeSender($this->createHelper(), $httpClient, $circuitBreaker);
-
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage($expectedMessage);
 
-        $sender->send('envelope-bytes');
+        $this->createSender($statusCode, 'boom')->send('envelope-bytes');
     }
 
     /**
      * @return array<string, array{0: int, 1: string}>
      */
-    public static function rejectedPayloadStatusCodeProvider(): array
+    public static function failedStatusCodeProvider(): array
     {
         return [
-            '413 content too large' => [413, 'Sentry envelope delivery failed with HTTP 413 (CONTENT_TOO_LARGE): rejected'],
-            '400 invalid'           => [400, 'Sentry envelope delivery failed with HTTP 400 (INVALID): rejected'],
+            '5xx server error'      => [503, 'Sentry envelope delivery failed with HTTP 503 (FAILED): boom'],
+            'unrecognized status 0' => [0, 'Sentry envelope delivery failed with HTTP 0 (UNKNOWN): boom'],
+            '413 content too large' => [413, 'Sentry envelope delivery failed with HTTP 413 (CONTENT_TOO_LARGE): boom'],
+            '400 invalid'           => [400, 'Sentry envelope delivery failed with HTTP 400 (INVALID): boom'],
         ];
     }
 }

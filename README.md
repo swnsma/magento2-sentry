@@ -118,13 +118,13 @@ Event delivery can be configured as either synchronous or asynchronous:
 1. (Default) **Sync mode** (`async_sending_enabled = false`): Events are sent over HTTP immediately.
 2. **Async mode** (`async_sending_enabled = true`): Events are serialized immediately with exact capture timestamps and published to the `justbetter.sentry.event.send` message queue. A background consumer delivers them to Sentry via HTTP.
 
-Both modes share an always-on circuit breaker:
+Both modes share two safeguards, kept in the Magento cache so every process sees them:
 
-- When consecutive failures (5xx, network errors) reach `circuit_breaker_failure_threshold`, the circuit opens. Events are dropped without blocking Magento until `circuit_breaker_recovery_timeout` has passed.
-- When the consumer gets a rate-limit response (HTTP 429, e.g. quota exhausted), the circuit opens right away. It stays open until the time Sentry sends in `X-Sentry-Rate-Limits` / `Retry-After`.
-- While the circuit is open, async mode does not publish new events, and the consumer drops queued ones without calling Sentry.
+- **Circuit breaker** (Sentry is unreachable): when consecutive failures (5xx, network errors) reach `circuit_breaker_failure_threshold`, the circuit opens. All events are dropped without blocking Magento until `circuit_breaker_recovery_timeout` has passed.
+- **Rate limits** (Sentry refuses a data category, e.g. quota exhausted): Sentry's `X-Sentry-Rate-Limits` header is tracked per category (errors, transactions, cron check-ins, logs), until the time Sentry sends. A limit on one category does not block the others, so cron check-ins keep arriving when the transaction quota runs out. A `Retry-After` header without categories, or a bare HTTP 429, limits all categories; the bare 429 lasts `circuit_breaker_recovery_timeout`.
+- While either applies, async mode does not publish the affected events, and the consumer drops queued ones without calling Sentry.
 
-The consumer never retries a failed envelope. Failures are written to `var/log/sentry.log` and are never sent to Sentry themselves. Rate-limit responses are not logged: they are expected while the quota is exhausted, and the circuit breaker already backs off.
+The consumer never retries a failed envelope. Failures are written to `var/log/sentry.log` and are never sent to Sentry themselves. Rate-limit responses are not logged: they are expected while the quota is exhausted, and delivery already backs off.
 
 To run the queue consumer manually:
 
@@ -183,6 +183,7 @@ public function execute(\Magento\Framework\Event\Observer $observer)
 Example: https://github.com/justbetter/magento2-sentry-filter-events
 
 This same thing is the case for
+
 |                                |                                                                                     |
 |--------------------------------|-------------------------------------------------------------------------------------|
 | sentry_before_send             | https://docs.sentry.io/platforms/php/configuration/options/#before_send             |

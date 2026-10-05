@@ -7,6 +7,7 @@ namespace JustBetter\Sentry\Model\Transport;
 use JustBetter\Sentry\Helper\Data;
 use JustBetter\Sentry\Model\CircuitBreaker;
 use JustBetter\Sentry\Model\Queue\Publisher\SentryEventPublisher;
+use JustBetter\Sentry\Model\RateLimitState;
 use Psr\Log\NullLogger;
 use Sentry\HttpClient\HttpClientInterface;
 use Sentry\Options;
@@ -22,17 +23,21 @@ class ResilientTransportFactory
     /**
      * @param SentryEventPublisher $publisher
      * @param CircuitBreaker       $circuitBreaker
+     * @param RateLimitState       $rateLimitState
      * @param Data                 $helper
      */
     public function __construct(
         private readonly SentryEventPublisher $publisher,
         private readonly CircuitBreaker $circuitBreaker,
+        private readonly RateLimitState $rateLimitState,
         private readonly Data $helper
     ) {
     }
 
     /**
      * Create transport for the given Sentry client options.
+     *
+     * Request-path client only; the async consumer's client is wired to EnvelopeSender in di.xml.
      *
      * @param Options             $options
      * @param HttpClientInterface $httpClient
@@ -44,7 +49,7 @@ class ResilientTransportFactory
         $payloadSerializer = new PayloadSerializer($options);
         $httpTransport = new HttpTransport(
             $options,
-            $httpClient,
+            new ResponseRecordingHttpClient($httpClient, $this->circuitBreaker, $this->rateLimitState),
             $payloadSerializer,
             new NullLogger()
         );
@@ -54,6 +59,7 @@ class ResilientTransportFactory
             $payloadSerializer,
             $this->publisher,
             $this->circuitBreaker,
+            $this->rateLimitState,
             $this->helper
         );
     }

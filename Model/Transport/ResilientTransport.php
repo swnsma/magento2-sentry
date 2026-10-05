@@ -7,6 +7,7 @@ namespace JustBetter\Sentry\Model\Transport;
 use JustBetter\Sentry\Helper\Data;
 use JustBetter\Sentry\Model\CircuitBreaker;
 use JustBetter\Sentry\Model\Queue\Publisher\SentryEventPublisher;
+use JustBetter\Sentry\Model\RateLimitState;
 use Sentry\Event;
 use Sentry\Serializer\PayloadSerializerInterface;
 use Sentry\Transport\Result;
@@ -15,7 +16,8 @@ use Sentry\Transport\TransportInterface;
 use Throwable;
 
 /**
- * Request-path transport: queue when configured / circuit open, otherwise short HTTP.
+ * Request-path transport: queue or short HTTP per configuration. Drops events while
+ * Sentry is down or rate-limits their category.
  */
 class ResilientTransport implements TransportInterface
 {
@@ -29,6 +31,7 @@ class ResilientTransport implements TransportInterface
      * @param PayloadSerializerInterface $payloadSerializer
      * @param SentryEventPublisher       $publisher
      * @param CircuitBreaker             $circuitBreaker
+     * @param RateLimitState             $rateLimitState
      * @param Data                       $helper
      */
     public function __construct(
@@ -36,12 +39,13 @@ class ResilientTransport implements TransportInterface
         private readonly PayloadSerializerInterface $payloadSerializer,
         private readonly SentryEventPublisher $publisher,
         private readonly CircuitBreaker $circuitBreaker,
+        private readonly RateLimitState $rateLimitState,
         private readonly Data $helper
     ) {
     }
 
     /**
-     * Send event via queue or HTTP depending on configuration and circuit state.
+     * Send event via queue or HTTP depending on configuration, circuit state and rate limits.
      *
      * @param Event $event
      *
@@ -57,9 +61,18 @@ class ResilientTransport implements TransportInterface
         $this->sending = true;
 
         try {
+            // Applies to both modes: sync fails fast, and the consumer would drop a queued copy anyway.
+            if (!$this->circuitBreaker->allowRequest()) {
+                return new Result(ResultStatus::failed(), $event);
+            }
+
+            if ($this->rateLimitState->isLimited((string) $event->getType())) {
+                return new Result(ResultStatus::rateLimit(), $event);
+            }
+
             return $this->shouldQueue()
                 ? $this->queue($event)
-                : $this->sendHttp($event);
+                : $this->httpTransport->send($event);
         } catch (Throwable) {
             return new Result(ResultStatus::failed(), $event);
         } finally {
@@ -88,42 +101,6 @@ class ResilientTransport implements TransportInterface
     }
 
     /**
-     * Attempt synchronous HTTP delivery and update the circuit breaker.
-     *
-     * @param Event $event
-     *
-     * @return Result
-     */
-    private function sendHttp(Event $event): Result
-    {
-        if (!$this->circuitBreaker->allowRequest()) {
-            return new Result(ResultStatus::failed(), $event);
-        }
-
-        try {
-            $result = $this->httpTransport->send($event);
-        } catch (Throwable) {
-            $this->circuitBreaker->recordFailure();
-
-            return new Result(ResultStatus::failed(), $event);
-        }
-
-        if ($this->isSuccess($result)) {
-            $this->circuitBreaker->recordSuccess();
-
-            return $result;
-        }
-
-        if ($this->isServerSideFailure($result)) {
-            $this->circuitBreaker->recordFailure();
-
-            return $result;
-        }
-
-        return $result;
-    }
-
-    /**
      * Serialize at fire time and enqueue the envelope bytes.
      *
      * Consumer POSTs this as-is, so Sentry keeps payload "timestamp" / "sent_at".
@@ -132,11 +109,6 @@ class ResilientTransport implements TransportInterface
      */
     private function queue(Event $event): Result
     {
-        // Consumer would drop it anyway while the circuit is open.
-        if (!$this->circuitBreaker->allowRequest()) {
-            return new Result(ResultStatus::failed(), $event);
-        }
-
         if ($event->getTimestamp() === null) {
             $event->setTimestamp(microtime(true));
         }
@@ -144,29 +116,5 @@ class ResilientTransport implements TransportInterface
         $this->publisher->publish($this->payloadSerializer->serialize($event));
 
         return new Result(ResultStatus::success(), $event);
-    }
-
-    /**
-     * Whether the transport result indicates success.
-     *
-     * @param Result $result
-     */
-    private function isSuccess(Result $result): bool
-    {
-        return (string) $result->getStatus() === (string) ResultStatus::success();
-    }
-
-    /**
-     * Whether the transport result should count as a circuit-breaker failure.
-     *
-     * @param Result $result
-     */
-    private function isServerSideFailure(Result $result): bool
-    {
-        return in_array((string) $result->getStatus(), [
-            (string) ResultStatus::failed(),
-            (string) ResultStatus::unknown(),
-            (string) ResultStatus::rateLimit(),
-        ], true);
     }
 }

@@ -122,9 +122,16 @@
         </arguments>
     </virtualType>
 
-    <type name="JustBetter\Sentry\Model\Transport\EnvelopeSender">
+    <!-- Async consumer client only; the request-path client is built in ResilientTransportFactory::create() -->
+    <virtualType name="JustBetter\Sentry\Model\Transport\EnvelopeRecordingHttpClient" type="JustBetter\Sentry\Model\Transport\ResponseRecordingHttpClient">
         <arguments>
             <argument name="httpClient" xsi:type="object">JustBetter\Sentry\Model\Transport\EnvelopeHttpClient</argument>
+        </arguments>
+    </virtualType>
+
+    <type name="JustBetter\Sentry\Model\Transport\EnvelopeSender">
+        <arguments>
+            <argument name="httpClient" xsi:type="object">JustBetter\Sentry\Model\Transport\EnvelopeRecordingHttpClient</argument>
         </arguments>
     </type>
 
