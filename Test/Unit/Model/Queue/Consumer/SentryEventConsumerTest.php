@@ -6,7 +6,6 @@ namespace JustBetter\Sentry\Test\Unit\Model\Queue\Consumer;
 
 use JustBetter\Sentry\Helper\Data;
 use JustBetter\Sentry\Model\CircuitBreaker;
-use JustBetter\Sentry\Model\DeliveryGuard;
 use JustBetter\Sentry\Model\Queue\Consumer\SentryEventConsumer;
 use JustBetter\Sentry\Model\Transport\EnvelopeSender;
 use PHPUnit\Framework\TestCase;
@@ -19,14 +18,12 @@ class SentryEventConsumerTest extends TestCase
         ?EnvelopeSender $envelopeSender = null,
         ?CircuitBreaker $circuitBreaker = null,
         ?Data $helper = null,
-        ?LoggerInterface $logger = null,
-        ?DeliveryGuard $guard = null
+        ?LoggerInterface $logger = null
     ): SentryEventConsumer {
         return new SentryEventConsumer(
             $envelopeSender ?? $this->createStub(EnvelopeSender::class),
             $circuitBreaker ?? $this->createStub(CircuitBreaker::class),
             $helper ?? $this->activeHelperStub(),
-            $guard ?? new DeliveryGuard(),
             $logger ?? $this->createStub(LoggerInterface::class)
         );
     }
@@ -50,9 +47,7 @@ class SentryEventConsumerTest extends TestCase
         $circuitBreaker = $this->createMock(CircuitBreaker::class);
         $circuitBreaker->expects($this->never())->method('allowRequest');
 
-        $guard = new DeliveryGuard();
-        $this->createConsumer($envelopeSender, $circuitBreaker, $helper, null, $guard)->process('payload');
-        $this->assertTrue($guard->isActive());
+        $this->createConsumer($envelopeSender, $circuitBreaker, $helper)->process('payload');
     }
 
     public function testSkipsEmptyPayload(): void

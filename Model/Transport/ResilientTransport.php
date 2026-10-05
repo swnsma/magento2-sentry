@@ -6,7 +6,6 @@ namespace JustBetter\Sentry\Model\Transport;
 
 use JustBetter\Sentry\Helper\Data;
 use JustBetter\Sentry\Model\CircuitBreaker;
-use JustBetter\Sentry\Model\DeliveryGuard;
 use JustBetter\Sentry\Model\Queue\Publisher\SentryEventPublisher;
 use Sentry\Event;
 use Sentry\Serializer\PayloadSerializerInterface;
@@ -21,20 +20,23 @@ use Throwable;
 class ResilientTransport implements TransportInterface
 {
     /**
+     * @var bool
+     */
+    private bool $sending = false;
+
+    /**
      * @param TransportInterface         $httpTransport
      * @param PayloadSerializerInterface $payloadSerializer
      * @param SentryEventPublisher       $publisher
      * @param CircuitBreaker             $circuitBreaker
      * @param Data                       $helper
-     * @param DeliveryGuard              $deliveryGuard
      */
     public function __construct(
         private readonly TransportInterface $httpTransport,
         private readonly PayloadSerializerInterface $payloadSerializer,
         private readonly SentryEventPublisher $publisher,
         private readonly CircuitBreaker $circuitBreaker,
-        private readonly Data $helper,
-        private readonly DeliveryGuard $deliveryGuard
+        private readonly Data $helper
     ) {
     }
 
@@ -47,12 +49,12 @@ class ResilientTransport implements TransportInterface
      */
     public function send(Event $event): Result
     {
-        // Avoid re-entry if publishing, logging, or the consumer triggers another capture.
-        if ($this->deliveryGuard->isActive()) {
+        // Avoid re-entry if publishing/logging triggers another capture.
+        if ($this->sending) {
             return new Result(ResultStatus::skipped(), $event);
         }
 
-        $this->deliveryGuard->enter();
+        $this->sending = true;
 
         try {
             return $this->shouldQueue()
@@ -61,7 +63,7 @@ class ResilientTransport implements TransportInterface
         } catch (Throwable) {
             return new Result(ResultStatus::failed(), $event);
         } finally {
-            $this->deliveryGuard->leave();
+            $this->sending = false;
         }
     }
 

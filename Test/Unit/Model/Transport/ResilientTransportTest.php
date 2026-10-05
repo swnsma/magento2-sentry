@@ -6,7 +6,6 @@ namespace JustBetter\Sentry\Test\Unit\Model\Transport;
 
 use JustBetter\Sentry\Helper\Data;
 use JustBetter\Sentry\Model\CircuitBreaker;
-use JustBetter\Sentry\Model\DeliveryGuard;
 use JustBetter\Sentry\Model\Queue\Publisher\SentryEventPublisher;
 use JustBetter\Sentry\Model\Transport\ResilientTransport;
 use PHPUnit\Framework\TestCase;
@@ -24,16 +23,14 @@ class ResilientTransportTest extends TestCase
         PayloadSerializerInterface $payloadSerializer,
         SentryEventPublisher $publisher,
         CircuitBreaker $circuitBreaker,
-        Data $helper,
-        ?DeliveryGuard $deliveryGuard = null
+        Data $helper
     ): ResilientTransport {
         return new ResilientTransport(
             $httpTransport,
             $payloadSerializer,
             $publisher,
             $circuitBreaker,
-            $helper,
-            $deliveryGuard ?? new DeliveryGuard()
+            $helper
         );
     }
 
@@ -355,32 +352,40 @@ class ResilientTransportTest extends TestCase
         $this->assertSame((string) ResultStatus::success(), (string) $result->getStatus());
     }
 
-    public function testSkipsWhenDeliveryGuardAlreadyActive(): void
+    public function testSendAfterFailedSendIsNotSkipped(): void
     {
-        $event = Event::createEvent();
         $helper = $this->createStub(Data::class);
         $helper->method('isAsyncSendingEnabled')->willReturn(true);
 
+        $payloadSerializer = $this->createStub(PayloadSerializerInterface::class);
+        $payloadSerializer->method('serialize')->willReturn('payload');
+
+        $calls = 0;
         $publisher = $this->createMock(SentryEventPublisher::class);
-        $publisher->expects($this->never())->method('publish');
+        $publisher->expects($this->exactly(2))
+            ->method('publish')
+            ->willReturnCallback(static function () use (&$calls): void {
+                if (++$calls === 1) {
+                    throw new RuntimeException('mq down');
+                }
+            });
 
-        $httpTransport = $this->createMock(TransportInterface::class);
-        $httpTransport->expects($this->never())->method('send');
+        $circuitBreaker = $this->createStub(CircuitBreaker::class);
+        $circuitBreaker->method('allowRequest')->willReturn(true);
 
-        $guard = new DeliveryGuard();
-        $guard->enter();
-
-        $result = $this->createTransport(
-            $httpTransport,
-            $this->createStub(PayloadSerializerInterface::class),
+        $transport = $this->createTransport(
+            $this->createStub(TransportInterface::class),
+            $payloadSerializer,
             $publisher,
-            $this->createStub(CircuitBreaker::class),
-            $helper,
-            $guard
-        )->send($event);
+            $circuitBreaker,
+            $helper
+        );
 
-        $this->assertSame((string) ResultStatus::skipped(), (string) $result->getStatus());
-        $this->assertTrue($guard->isActive());
+        $failed = $transport->send(Event::createEvent());
+        $retried = $transport->send(Event::createEvent());
+
+        $this->assertSame((string) ResultStatus::failed(), (string) $failed->getStatus());
+        $this->assertSame((string) ResultStatus::success(), (string) $retried->getStatus());
     }
 
     public function testNestedSendDuringPublishIsSkipped(): void
