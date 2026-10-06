@@ -110,7 +110,7 @@ class SentryEventConsumerTest extends TestCase
             'check-in envelope'           => ["{}\n{\"type\":\"check_in\"}\n{}", 'check_in'],
             'event with envelope headers' => [
                 "{\"event_id\":\"abc\",\"sent_at\":\"2026-10-05T12:00:00Z\"}\n"
-                . "{\"type\":\"event\",\"content_type\":\"application/json\"}\n{}",
+                ."{\"type\":\"event\",\"content_type\":\"application/json\"}\n{}",
                 'event',
             ],
             'single line payload'         => ['envelope-bytes', ''],

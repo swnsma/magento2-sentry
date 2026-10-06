@@ -24,7 +24,7 @@ class SentryEventConsumer
      * @param CircuitBreaker  $circuitBreaker
      * @param RateLimitState  $rateLimitState
      * @param Data            $helper
-     * @param LoggerInterface $logger File-only channel, excluded from Sentry by MonologPlugin
+     * @param LoggerInterface $logger         File-only channel, excluded from Sentry by MonologPlugin
      */
     public function __construct(
         private readonly EnvelopeSender $envelopeSender,
@@ -64,6 +64,7 @@ class SentryEventConsumer
      * @see \Sentry\Serializer\PayloadSerializer::serialize()
      *
      * @param string $payload
+     *
      * @return string
      */
     private function getItemType(string $payload): string

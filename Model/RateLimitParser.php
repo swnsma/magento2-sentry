@@ -23,6 +23,7 @@ class RateLimitParser
      * Unix timestamps until which Sentry asked us to stop sending, keyed by data category.
      *
      * @param Response $response
+     *
      * @return array<string, int>
      */
     public function parse(Response $response): array
@@ -62,6 +63,7 @@ class RateLimitParser
      *
      * @param string $retryAfter
      * @param int    $now
+     *
      * @return int|null
      */
     private function parseRetryAfter(string $retryAfter, int $now): ?int

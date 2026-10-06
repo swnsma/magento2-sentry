@@ -63,7 +63,7 @@ class RateLimitParserTest extends TestCase
                 ['X-Sentry-Rate-Limits' => ['abc:error:key,45:transaction:key']],
                 ['transaction' => 45],
             ],
-            'only non-digit entries'                  => [['X-Sentry-Rate-Limits' => ['abc:error:key']], []],
+            'only non-digit entries'                   => [['X-Sentry-Rate-Limits' => ['abc:error:key']], []],
             'rate limits header wins over retry-after' => [
                 ['X-Sentry-Rate-Limits' => ['30:error:key'], 'Retry-After' => ['600']],
                 ['error' => 30],
